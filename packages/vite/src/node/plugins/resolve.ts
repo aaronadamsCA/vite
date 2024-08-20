@@ -30,7 +30,6 @@ import {
   isNonDriveRelativeAbsolutePath,
   isObject,
   isOptimizable,
-  isTsRequest,
   normalizePath,
   safeRealpathSync,
   tryStatSync,
@@ -107,11 +106,6 @@ export interface InternalResolveOptions extends Required<ResolveOptions> {
   tryPrefix?: string
   preferRelative?: boolean
   isRequire?: boolean
-  // #3040
-  // when the importer is a ts module,
-  // if the specifier requests a non-existent `.js/jsx/mjs/cjs` file,
-  // should also try import from `.ts/tsx/mts/cts` source file as fallback.
-  isFromTsImporter?: boolean
   tryEsmOnly?: boolean
   // True when resolving during the scan phase to discover dependencies
   scan?: boolean
@@ -204,18 +198,6 @@ export function resolvePlugin(resolveOptions: InternalResolveOptions): Plugin {
 
         if (resolveOpts.custom?.['vite:import-glob']?.isSubImportsPattern) {
           return normalizePath(path.join(root, id))
-        }
-      }
-
-      if (importer) {
-        if (
-          isTsRequest(importer) ||
-          resolveOpts.custom?.depScan?.loader?.startsWith('ts')
-        ) {
-          options.isFromTsImporter = true
-        } else {
-          const moduleLang = this.getModuleInfo(importer)?.meta?.vite?.lang
-          options.isFromTsImporter = moduleLang && isTsRequest(`.${moduleLang}`)
         }
       }
 
@@ -599,30 +581,47 @@ function tryCleanFsResolve(
   let res: string | undefined
 
   // If path.dirname is a valid directory, try extensions and ts resolution logic
-  const possibleJsToTs = options.isFromTsImporter && isPossibleTsOutput(file)
-  if (possibleJsToTs || options.extensions.length || tryPrefix) {
+  const possibleJsToTs = isPossibleTsOutput(file)
+  if (possibleJsToTs || extensions.length || tryPrefix) {
     const dirPath = path.dirname(file)
     if (fsUtils.isDirectory(dirPath)) {
       if (possibleJsToTs) {
         // try resolve .js, .mjs, .cjs or .jsx import to typescript file
         const fileExt = path.extname(file)
         const fileName = file.slice(0, -fileExt.length)
-        if (
-          (res = fsUtils.tryResolveRealFile(
-            fileName + fileExt.replace('js', 'ts'),
-            preserveSymlinks,
-          ))
-        )
-          return res
-        // for .js, also try .tsx
-        if (
-          fileExt === '.js' &&
-          (res = fsUtils.tryResolveRealFile(
-            fileName + '.tsx',
-            preserveSymlinks,
-          ))
-        )
-          return res
+        switch (fileExt) {
+          case '.js':
+          case '.jsx':
+            if (
+              (res = fsUtils.tryResolveRealFileWithExtensions(
+                fileName,
+                ['.ts', '.tsx'],
+                preserveSymlinks,
+              ))
+            )
+              return res
+            break
+          case '.mjs':
+            if (
+              (res = fsUtils.tryResolveRealFileWithExtensions(
+                fileName,
+                ['.mts'],
+                preserveSymlinks,
+              ))
+            )
+              return res
+            break
+          case '.cjs':
+            if (
+              (res = fsUtils.tryResolveRealFileWithExtensions(
+                fileName,
+                ['.cts'],
+                preserveSymlinks,
+              ))
+            )
+              return res
+            break
+        }
       }
 
       if (
